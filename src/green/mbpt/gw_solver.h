@@ -78,7 +78,7 @@ namespace green::mbpt {
      * @param sigma_tau Imaginary-time self-energy
      */
     void solve(G_type& g, S1_type&, St_type& sigma_tau);
-
+    
   private:
     std::shared_ptr<void>                              _kernel;
     std::function<void(G_type& g, St_type& sigma_tau)> _callback;

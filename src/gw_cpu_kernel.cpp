@@ -88,7 +88,7 @@ namespace green::mbpt::kernels {
     MPI_Win_lock_all(MPI_MODE_NOCHECK, P0_tilde_s.win());
     for (size_t k1 = 0; k1 < _nk; ++k1) {
       size_t k1_plus_q = _bz_utils.k_q_map().k1_from_k2q(k1, q_ir);
-      std::array<size_t, 2> k1_k1q = {k1, k1_plus_q};
+      std::array<size_t, 2> k1_k1q    = {k1, k1_plus_q};
       statistics.start("read");
       read_next(k1_k1q);
       statistics.end();
@@ -115,7 +115,7 @@ namespace green::mbpt::kernels {
       // Loop over the degenerate points of q_ir, i.e. "star" of q_ir
       for (size_t q_deg : _bz_utils.q_symmetry().star(_bz_utils.q_symmetry().reduced_point(q_ir))) {
         size_t k1_minus_q = _bz_utils.k_q_map().k2_from_k1q(k1_ir, q_deg);
-        std::array<size_t, 2> k1_k1mq = {k1_ir, k1_minus_q};
+        std::array<size_t, 2> k1_k1mq    = {k1_ir, k1_minus_q};
         statistics.start("read");
         read_next(k1_k1mq);
         statistics.end();
@@ -147,22 +147,31 @@ namespace green::mbpt::kernels {
     // (Q, p, m) or (Q', t, n)*
     tensor<prec, 3> v(_NQ, _nao, _nao);
     _coul_int1->symmetrize(v, k1_k1q[0], k1_k1q[1]);
-    MMatrixX<prec> vm(v.data(), _NQ, _nao * _nao);
-    MMatrixX<prec> vmm(v.data(), _NQ * _nao, _nao);
+    // compute the number of valence orbitals, use ncore only for frozen core
+    size_t nv(_nao - _ncore - _nv_del);
+    statistics.start("Integral slice");
+    if (_ncore > 0 || _nv_del > 0) {
+      valence_slice_coulint_inplace(_nao, _ncore, nv, _NQ, _core_reordering, v); 
+    }
+    statistics.end();
+
+    MMatrixX<prec> vm(v.data(), _NQ, nv * nv);
+    MMatrixX<prec> vmm(v.data(), _NQ * nv, nv);
     // #pragma omp parallel
     {
       MatrixX<prec>   Gb_k1(_nao, _nao);
       MatrixX<prec>   G_k1q(_nao, _nao);
-      tensor<prec, 3> X1(_nao, _nao, _NQ);
-      tensor<prec, 3> X2(_NQ, _nao, _nao);
+      // MatrixX<prec>   Gb_k1_val(nv, nv);
+      // MatrixX<prec>   G_k1q_val(nv, nv);
+      tensor<prec, 3> X1(nv, nv, _NQ);
+      tensor<prec, 3> X2(_NQ, nv, nv);
 
-      MMatrixX<prec>  VVm(X2.data(), _nao * _nao, _NQ);
-      MMatrixX<prec>  VVmm(X2.data(), _nao, _nao * _NQ);
-      MMatrixX<prec>  X1m(X1.data(), _nao, _nao * _NQ);
-      MMatrixX<prec>  X2m(X2.data(), _NQ * _nao, _nao);
-      MMatrixX<prec>  X1mm(X1.data(), _nao * _nao, _NQ);
-      MMatrixX<prec>  X2mm(X2.data(), _NQ, _nao * _nao);
-
+      MMatrixX<prec>  VVm(X2.data(), nv * nv, _NQ);
+      MMatrixX<prec>  VVmm(X2.data(), nv, nv * _NQ);
+      MMatrixX<prec>  X1m(X1.data(), nv, nv * _NQ);
+      MMatrixX<prec>  X2m(X2.data(), _NQ * nv, nv);
+      MMatrixX<prec>  X1mm(X1.data(), nv * nv, _NQ);
+      MMatrixX<prec>  X2mm(X2.data(), _NQ, nv * nv);
       size_t          pns       = _nso / _nao;  // spin blocks per dimension: 1 for non-X2C, 2 for X2C
       double          prefactor = (_ns == 2 or _X2C) ? 1.0 : 2.0;
       size_t          pseudo_ns = (!_X2C) ? _ns : 4;  // 1: restricted, 2: unrestricted, 4: X2C (all spin blocks)
@@ -183,10 +192,19 @@ namespace green::mbpt::kernels {
           size_t b  = s % pns;          // col spin-block index; G^bar(k1) uses (b,a) to take the adjoint block
           Gb_k1 = G_k1_full[is].block(b * _nao, a * _nao, _nao, _nao);
           G_k1q = G_k1q_full[is].block(a * _nao, b * _nao, _nao, _nao);
-          P0_contraction<prec>(Gb_k1, G_k1q, vm, VVm, VVmm, X1m, vmm, X2m, X1mm, X2mm, P0, prefactor);
+
+          statistics.start("G slice");
+	        if (_ncore > 0 || _nv_del > 0) {
+	            valence_slice_matrix_inplace(_nao, _ncore, nv, _core_reordering, Gb_k1);   // writes into top-left nv x nv block
+	            valence_slice_matrix_inplace(_nao, _ncore, nv, _core_reordering, G_k1q);
+	        }
+          statistics.end();
+
+          P0_contraction<prec>(Gb_k1.topLeftCorner(nv, nv), G_k1q.topLeftCorner(nv, nv), vm, VVm, VVmm, X1m, vmm, X2m, X1mm, X2mm, P0, prefactor);
         }
       }
     }
+
   }
 
 
@@ -229,7 +247,7 @@ namespace green::mbpt::kernels {
     auto [nw_local, w_offset] = compute_local_and_offset_node_comm(_nw_b, Pw_s.cntx());
     auto [nt_local, t_offset] = compute_local_and_offset_node_comm(_nts, P0_tilde.cntx());
     MPI_Win_lock_all(MPI_MODE_NOCHECK, Pw_s.win());
-    auto & P0_w = Pw_s.object();
+    auto& P0_w = Pw_s.object();
     statistics.start("P0(t) -> P0(w)");
     _ft.tau_f_to_w_b(P0_tilde.object(), P0_w, w_offset, nw_local, true);
     statistics.end();
@@ -259,7 +277,7 @@ namespace green::mbpt::kernels {
 
     statistics.start("P(w) -> P(t)");
     // Transform back from Bosonic Matsubara to Fermionic tau.
-    //P0_tilde.fence();
+    // P0_tilde.fence();
     MPI_Win_lock_all(MPI_MODE_NOCHECK, P0_tilde.win());
     _ft.w_b_to_tau_f(P0_w, P0_tilde.object(), t_offset, nt_local, true);
     //P0_tilde.fence();
@@ -298,14 +316,28 @@ namespace green::mbpt::kernels {
     // NOTE: k = (k1_ir, k1_ir-q_deg)
     // Link to corresponding irreducible k-point
     size_t k1q_pos               = _bz_utils.k_symmetry().reduced_point(k1_k1mq[1]);
-    auto [tau_local, tau_offset] = compute_local_and_offset_node_comm(_nts);
+    // Distribute tau over the self-energy object's own context, not the global one.
+    // The lattice path drives this on the global context (so this is unchanged for
+    // mbpt.exe), but a solve on a sub-communicator (e.g. MPI_COMM_SELF) must split
+    // tau over that sub-communicator, or its partial results are never recombined.
+    auto [tau_local, tau_offset] = compute_local_and_offset_node_comm(_nts, Sigma_fermi_s.cntx());
     auto&           Sigma_fermi  = Sigma_fermi_s.object();
 
     size_t          k1_pos       = _bz_utils.k_symmetry().reduced_point(k1_k1mq[0]);
     // (Q, i, m) or (Q', j, n)*
     tensor<prec, 3> v(_NQ, _nao, _nao);
     _coul_int1->symmetrize(v, k1_k1mq[0], k1_k1mq[1]);
-    MMatrixX<prec> vm(v.data(), _NQ * _nao, _nao);
+    // compute the number of valence orbitals, use ncore only for frozen core
+    size_t nv(_nao - _ncore - _nv_del);
+    // For now the code is doing the slice copy even if ncore = ndel = 0 that's not super clean
+    statistics.start("Integral slice");
+    // tensor<prec, 3> v_val(_NQ, nv, nv);
+
+    if (_ncore > 0 || _nv_del > 0) {
+      valence_slice_coulint_inplace(_nao, _ncore, nv, _NQ, _core_reordering, v); 
+    }
+    statistics.end();    
+    MMatrixX<prec> vm(v.data(), _NQ * nv, nv);
 
     // bosonic momentum q index in FBZ
     size_t q_idx = _bz_utils.k_q_map().q_from_k1k2(k1_k1mq[0], k1_k1mq[1]);
@@ -313,16 +345,17 @@ namespace green::mbpt::kernels {
     // #pragma omp parallel
     {
       MatrixX<prec>   G_k1q(_nao, _nao);
-      MatrixXcd       Sigma_ts(_nao, _nao);
-      tensor<prec, 3> Y1(_NQ, _nao, _nao);
-      tensor<prec, 3> Y2(_nao, _nao, _NQ);
+      // MatrixX<prec>   G_k1q_val(nv, nv);
+      MatrixXcd       Sigma_ts(nv, nv);
+      tensor<prec, 3> Y1(_NQ, nv, nv);
+      tensor<prec, 3> Y2(nv, nv, _NQ);
 
-      MMatrixX<prec>  Y1m(Y1.data(), _NQ * _nao, _nao);
-      MMatrixX<prec>  Y1mm(Y1.data(), _NQ, _nao * _nao);
-      MMatrixX<prec>  Y2mm(Y2.data(), _nao * _nao, _NQ);
-      MMatrixX<prec>  X2m(Y1.data(), _nao, _NQ * _nao);
-      MMatrixX<prec>  Y2mmm(Y2.data(), _nao, _nao * _NQ);
-      MMatrixX<prec>  X2mm(Y1.data(), _nao * _NQ, _nao);
+      MMatrixX<prec>  Y1m(Y1.data(), _NQ * nv, nv);
+      MMatrixX<prec>  Y1mm(Y1.data(), _NQ, nv * nv);
+      MMatrixX<prec>  Y2mm(Y2.data(), nv * nv, _NQ);
+      MMatrixX<prec>  X2m(Y1.data(), nv, _NQ * nv);
+      MMatrixX<prec>  Y2mmm(Y2.data(), nv, nv * _NQ);
+      MMatrixX<prec>  X2mm(Y1.data(), nv * _NQ, nv);
 
       // #pragma omp for
       size_t          pns       = _nso / _nao;  // spin blocks per dimension: 1 for non-X2C, 2 for X2C
@@ -340,14 +373,29 @@ namespace green::mbpt::kernels {
           size_t a  = (s / pns) % pns;  // row spin-block index of the G and Sigma blocks
           size_t b  = s % pns;          // col spin-block index
           G_k1q = G_k1q_full[is].block(a * _nao, b * _nao, _nao, _nao);
-          selfenergy_contraction(G_k1q, vm, Y1m, Y1mm, Y2mm, X2m, Y2mmm, X2mm, P_sp, Sigma_ts);
+          statistics.start("G slice");
+          // valence_slice_matrix(_nao, _ncore, _nv_del, _core_reordering, G_k1q, G_k1q_val);
+	        if (_ncore > 0 || _nv_del > 0) {
+	          valence_slice_matrix_inplace(_nao, _ncore, nv, _core_reordering, G_k1q);   // writes into top-left nv x nv block
+	        }
+	        statistics.end();
+
+          selfenergy_contraction<prec>(G_k1q.topLeftCorner(nv, nv), vm, Y1m, Y1mm, Y2mm, X2m, Y2mmm, X2mm, P_sp, Sigma_ts);
           // sigma_shift locates the start of the nso x nso Sigma matrix for
           // tau index t, spin is, and k-point k1_pos in the flat array
           // Sigma[nts, ns, ink, nso, nso]. The (a,b) spin block then receives
           // the nao x nao contraction result.
           sigma_shift = t * _ns * _ink * _nso * _nso + is * _ink * _nso * _nso + k1_pos * _nso * _nso;
           MMatrixXcd Sm_nso(Sigma_fermi.data() + sigma_shift, _nso, _nso);
-          Sm_nso.block(a * _nao, b * _nao, _nao, _nao) -= Sigma_ts;
+	        // Scatter Sigma_ts back using core_reordering so that valence orbital r maps to
+	        // its original index core_reordering[_ncore + r], matching the slice in valence_slice_matrix.
+	        for (size_t r = 0; r < nv; ++r) {
+	          for (size_t s = 0; s < nv; ++s) {
+		          Sm_nso(a * _nao + _core_reordering[_ncore + r], b * _nao + _core_reordering[_ncore + s]) -= Sigma_ts(r, s);
+	          }
+	        }
+
+          // Sm_nso.block(a * _nao + _ncore, b * _nao + _ncore, nv, nv) -= Sigma_ts;
         }
       }
     }
@@ -357,18 +405,18 @@ namespace green::mbpt::kernels {
    * Contraction for evaluating self-energy for given tau and k-point
    */
   template <typename prec>
-  void gw_cpu_kernel::selfenergy_contraction(const MatrixX<prec>& G_k1q, MMatrixX<prec>& vm,
+  void gw_cpu_kernel::selfenergy_contraction(const MatrixX<prec>& G_k1q, MMatrixX<prec>& vm, 
                                              MMatrixX<prec>& Y1m, MMatrixX<prec>& Y1mm, MMatrixX<prec>& Y2mm, MMatrixX<prec>& X2m,
                                              MMatrixX<prec>& Y2mmm, MMatrixX<prec>& X2mm, MatrixX<prec>& P, MatrixXcd& Sm_ts) {
     statistics.start("Selfenergy_zgemm");
     // Qi,n = (Qi, m) * (m, n)
-    Y1m.noalias() = vm * G_k1q;
+    Y1m.noalias()  = vm * G_k1q;
     // (in, Q') = (in, Q) * (Q, Q')
     Y2mm.noalias() = Y1mm.transpose() * P;
     // n, Q'j
-    X2m.noalias() = vm.transpose().conjugate();
+    X2m.noalias()  = vm.transpose().conjugate();
     // ij = (i, nQ')*(nQ', j)
-    Sm_ts         = (Y2mmm * X2mm).eval().template cast<std::complex<double>>();
+    Sm_ts          = (Y2mmm * X2mm).eval().template cast<std::complex<double>>();
     statistics.end();
   }
 
@@ -391,8 +439,8 @@ namespace green::mbpt::kernels {
                                               MMatrixX<std::complex<double>>& X2mm, MMatrixXcd& P0, double& prefactor);
   template void gw_cpu_kernel::eval_selfenergy<std::complex<float>>(const std::array<size_t, 2>& k1_k1mq, const G_type&, St_type&,
                                                                     ztensor<4>&);
-  template void gw_cpu_kernel::eval_selfenergy<std::complex<double>>(const std::array<size_t, 2>& k1_k1mq, const G_type&, St_type&,
-                                                                     ztensor<4>&);
+  template void gw_cpu_kernel::eval_selfenergy<std::complex<double>>(const std::array<size_t, 2>& k1_k1mq, const G_type&,
+                                                                     St_type&, ztensor<4>&);
   template void gw_cpu_kernel::selfenergy_contraction(const MatrixX<std::complex<float>>& G_k1q,
                                                       MMatrixX<std::complex<float>>& vm, MMatrixX<std::complex<float>>& Y1m,
                                                       MMatrixX<std::complex<float>>& Y1mm, MMatrixX<std::complex<float>>& Y2mm,
@@ -406,4 +454,4 @@ namespace green::mbpt::kernels {
                                                       MMatrixX<std::complex<double>>& X2mm, MatrixX<std::complex<double>>& P,
                                                       MatrixXcd& Sm_ts);
 
-}
+}  // namespace green::mbpt::kernels

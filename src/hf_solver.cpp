@@ -14,4 +14,4 @@ namespace green::mbpt {
     dm *= _spin_prefactor;
     sigma1 << _callback(dm);
   }
-}  // namespace green::mbpt
+} // namespace green::mbpt

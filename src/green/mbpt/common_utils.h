@@ -9,6 +9,11 @@
 #include <green/grids.h>
 #include "df_integral_t.h"
 
+#include "common_defs.h"
+#include "dyson.h"
+#include "kernels.h"
+#include "gf2_solver.h"
+
 namespace green::mbpt {
 
   inline void print_leakage(double leakage, const std::string& object) {
@@ -27,6 +32,35 @@ namespace green::mbpt {
                         ((size % cntx.node_size > cntx.node_rank) ? 0 : (size % cntx.node_size));
     return {local, offset};
   }
+
+  using G_type     = utils::shared_object<ztensor<5>>;
+  using S1_type    = ztensor<4>;
+  using St_type    = utils::shared_object<ztensor<5>>;
+    
+  template <typename prec>
+  void valence_slice_matrix_inplace(size_t nao, size_t ncore, size_t nv, const std::vector<int>& core_reordering, MatrixX<prec>& M) {
+	for (size_t r = 0; r < nv; ++r) {
+	    for (size_t s = 0; s < nv; ++s) {
+		    M(r, s) = M(core_reordering[ncore + r], core_reordering[ncore + s]);
+	    }
+	  }
+  }
+
+  template <typename prec>
+  void valence_slice_coulint_inplace(size_t nao, size_t ncore, size_t nv, size_t NQ, const std::vector<int>& core_reordering, tensor<prec, 3>& v) {
+  // Slice in place: compact the valence (r, s) block for each iq into the
+  // front of the same buffer used for v, instead of allocating v_val.
+  // Since we only ever write to earlier (iq, r, s) than we read from
+  // (compaction moves data "down"), no aliasing/overwrite issue occurs
+  // as long as we iterate iq, r, s in increasing order. 
+  for (size_t iq = 0; iq < NQ; ++iq) {
+    for (size_t r = 0; r < nv; ++r) {
+	    for (size_t s = 0; s < nv; ++s) {
+		    v(iq, r, s) = v(iq, core_reordering[ncore + r], core_reordering[ncore + s]);
+	    }
+	  }
+  }
+}
 
 }  // namespace green::mbpt
 #endif  // MBPT_COMMON_UTILS_H

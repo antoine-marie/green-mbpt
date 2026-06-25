@@ -30,5 +30,4 @@ namespace green::mbpt {
   void gw_solver::solve(G_type& g, S1_type&, St_type& sigma_tau) {
     _callback(g, sigma_tau);
   }
-
 }  // namespace green::mbpt

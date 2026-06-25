@@ -53,5 +53,5 @@ namespace green::mbpt {
 
     return std::array<double, 3>{e1e, ehf, energy};
   }
-
+  
 }

@@ -291,7 +291,8 @@ namespace green::mbpt {
   double dyson<utils::shared_object<ztensor<5>>, ztensor<4>, utils::shared_object<ztensor<5>>>::diff(G& g, Sigma1& sigma1,
                                                                                                      Sigma_tau& sigma_tau) {
     auto [e1, e2, e3] = compute_energy(g.object(), sigma1, sigma_tau.object(), _H_k, _ft, _bz_utils, _nao != _nso);
-    double diff       = std::abs(_E_1b - e1) + std::abs(_E_hf - e2) + std::abs(_E_corr - e3);
+    // double diff       = std::abs(_E_1b - e1) + std::abs(_E_hf - e2) + std::abs(_E_corr - e3);
+    double diff       = std::abs(_E_hf - e2 + _E_corr - e3);
     _E_1b             = e1;
     _E_hf             = e2;
     _E_corr           = e3;
@@ -301,7 +302,8 @@ namespace green::mbpt {
   template <>
   double dyson<ztensor<5>, ztensor<4>, ztensor<5>>::diff(G& g, Sigma1& sigma1, Sigma_tau& sigma_tau) {
     auto [e1, e2, e3] = compute_energy(g, sigma1, sigma_tau, _H_k, _ft, _bz_utils, _nao != _nso);
-    double diff       = std::abs(_E_1b - e1) + std::abs(_E_hf - e2) + std::abs(_E_corr - e3);
+    // double diff       = std::abs(_E_1b - e1) + std::abs(_E_hf - e2) + std::abs(_E_corr - e3);
+    double diff       = std::abs(_E_hf - e2 + _E_corr - e3);
     _E_1b             = e1;
     _E_hf             = e2;
     _E_corr           = e3;
