@@ -298,7 +298,11 @@ namespace green::mbpt::kernels {
     // NOTE: k = (k1_ir, k1_ir-q_deg)
     // Link to corresponding irreducible k-point
     size_t k1q_pos               = _bz_utils.k_symmetry().reduced_point(k1_k1mq[1]);
-    auto [tau_local, tau_offset] = compute_local_and_offset_node_comm(_nts);
+    // Distribute tau over the self-energy object's own context, not the global one.
+    // The lattice path drives this on the global context (so this is unchanged for
+    // mbpt.exe), but a solve on a sub-communicator (e.g. MPI_COMM_SELF) must split
+    // tau over that sub-communicator, or its partial results are never recombined.
+    auto [tau_local, tau_offset] = compute_local_and_offset_node_comm(_nts, Sigma_fermi_s.cntx());
     auto&           Sigma_fermi  = Sigma_fermi_s.object();
 
     size_t          k1_pos       = _bz_utils.k_symmetry().reduced_point(k1_k1mq[0]);
