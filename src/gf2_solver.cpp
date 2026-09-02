@@ -100,6 +100,25 @@ namespace green::mbpt {
     sigma_tau.fence();
     statistics.end();
     statistics.end();
+    if (!utils::context().node_rank) {
+      if (_frozen_core) {
+        for (size_t it = 0; it < _nts; ++it) {
+          for (size_t is = 0; is < _ns; ++is) {
+            for (size_t ik = 0; ik < _ink; ++ik) {
+
+              for (size_t s = 0; s < _ncore; ++s) {
+                // std::cout << s << " " << _core_reordering[s] << std::endl;
+                for (size_t r = 0; r < _nao; ++r) {
+                  Sigma_tau(it, is, ik, r, _core_reordering[s]) = 0;
+                  Sigma_tau(it, is, ik, _core_reordering[s], r) = 0;
+                }
+              }
+
+            }
+          }
+        }
+      }
+    }
     // print execution time
     statistics.print(utils::context().global);
     statistics.reset(); // Reset timings
@@ -159,6 +178,18 @@ namespace green::mbpt {
           G1 = _bz_utils.k_symmetry().value_AO(Gr_full_tau(t, is), k[1]);
           G2 = _bz_utils.k_symmetry().value_AO(Gr_full_tau(tt, isp), k[2]);
           G3 = _bz_utils.k_symmetry().value_AO(Gr_full_tau(t, isp), k[3]);
+          if (_frozen_core) {
+            for (size_t s = 0; s < _ncore; ++s) {
+              for (size_t r = 0; r < _nao; ++r) {              
+                G1(r, _core_reordering[s]) = 0;
+                G1(_core_reordering[s], r) = 0;                
+                G2(r, _core_reordering[s]) = 0;
+                G2(_core_reordering[s], r) = 0;                
+                G3(r, _core_reordering[s]) = 0;
+                G3(_core_reordering[s], r) = 0;
+              }
+            }
+          } // end of zeroing
           for (size_t i = 0; i < _nao; ++i) {
             // pm,k
             MMatrixXcd Sm(Sigma_local.data() + shift + i * _nao, 1, _nao);

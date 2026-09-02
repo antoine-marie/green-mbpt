@@ -166,6 +166,10 @@ namespace green::mbpt {
     p.define<sigma_q0_treatment_e>("q0_treatment", "GW q=0 divergence treatment", ignore_G0);
     p.define<std::vector<job_type>>("jobs", "Jobs to run.", std::vector{SC});
     p.define<kernel_type>("kernel", "Type of the computing kernel.", CPU);
+    p.define<bool>("frozen_core", "Frozen-core restriction for the GW or GF2 self-energy.", false);
+    p.define<std::vector<int>>("core_reordering", "Vector of int to reorder orbitals. [-1] means that it will be read from input.h5", std::vector<int>{-1});  
+    p.define<int>("ncore", "Number of core orbitals to remove. -1 means that it will be read from input.h5", -1);  
+    p.define<size_t>("nv_del", "Number of virtual orbitals to remove from the computation of the GW dynamic self-energy.", 0);
 #ifdef GREEN_CUSTOM_KERNEL_HEADER_0
     GREEN_CUSTOM_KERNEL_NS_0::custom_kernel_parameters(p);
 #endif

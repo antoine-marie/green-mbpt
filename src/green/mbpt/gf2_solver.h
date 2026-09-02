@@ -42,12 +42,19 @@ namespace green::mbpt {
     gf2_solver(const params::params& p, const grids::transformer_t& tr, const bz_utils_t& bz) :
         _nts(tr.sd().repn_fermi().nts()), _nk(bz.nk()), _ink(bz.ink()), _path(p["dfintegral_file"]),
         _ewald(std::filesystem::exists(_path + "/df_ewald.h5")), _bz_utils(bz),
+        _frozen_core(p["frozen_core"]),
         statistics("GF2") {
       h5pp::archive ar(p["input_file"]);
       ar["params/nao"] >> _nao;
       ar["params/nso"] >> _nso;
       ar["params/ns"] >> _ns;
       ar["params/NQ"] >> _NQ;
+      // The number of core orbitals is initialized only if frozen core is activated
+      _ncore = 0;
+      if (_frozen_core) {
+        ar["params/ncore"] >> _ncore;
+      }
+      ar["params/core_reordering"] >> _core_reordering;
       ar.close();
     }
 
@@ -72,6 +79,12 @@ namespace green::mbpt {
     size_t            _nso;
     size_t            _ns;
     size_t            _NQ;
+    // Run frozen core GW
+    bool                        _frozen_core;
+    // number of core orbitals
+    size_t                      _ncore;
+    // list to reorder orbital
+    std::vector<size_t>         _core_reordering;
 
     // Path to H5 file
     const std::string _path;

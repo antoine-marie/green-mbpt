@@ -31,6 +31,7 @@
 #include "df_integral_t.h"
 #include "except.h"
 #include "mbpt_q0_utils_t.h"
+#include "common_utils.h"
 
 namespace green::mbpt::kernels {
   class gw_cpu_kernel {
@@ -48,8 +49,24 @@ namespace green::mbpt::kernels {
         _q0_utils(bz_utils.inq(), 0, S_k, _path, p["q0_treatment"]),
         // _P0_tilde(0, 0, 0, 0),
         _eps_inv_wq(ft.wsample_bose().size(), bz_utils.inq()),
-        _coul_int1(nullptr) {
+        _coul_int1(nullptr),
+        _frozen_core(p["frozen_core"]),_nv_del(p["nv_del"]) {
       _q0_utils.resize(_NQ);
+
+      h5pp::archive       ar(p["input_file"]);
+      // The number of core orbitals is initialized only if frozen core is activated
+      _ncore = 0;
+      if (_frozen_core) {
+        if (p["ncore"].as<int>() == -1) { ar["params/ncore"] >> _ncore; } 
+        else { _ncore = p["ncore"]; }
+      }
+      if (_frozen_core) {
+        if (p["core_reordering"].as<std::vector<int>>() == std::vector<int>{-1}) { ar["params/core_reordering"] >> _core_reordering; }
+       else { _core_reordering = p["core_reordering"]; }
+      } else {
+        for (int i = 0; i <= _nao - 1; ++i) { _core_reordering.push_back(i);};
+      }
+      ar.close();
     }
 
     void solve(G_type& g, St_type& sigma_tau);
@@ -100,6 +117,14 @@ namespace green::mbpt::kernels {
     // Pre-computed fitted densities
     // This object reads 3-index tensors into Vij_Q
     df_integral_t*              _coul_int1;
+    // Run frozen core GW
+    bool                        _frozen_core;  
+    // number of core orbitals
+    size_t                      _nv_del;
+    // number of core orbitals
+    size_t                      _ncore;
+    // list to reorder orbital
+    std::vector<int>            _core_reordering;
 
   private:
     /**
