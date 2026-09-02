@@ -147,21 +147,29 @@ namespace green::mbpt::kernels {
     // (Q, p, m) or (Q', t, n)*
     tensor<prec, 3> v(_NQ, _nao, _nao);
     _coul_int1->symmetrize(v, k1_k1q[0], k1_k1q[1]);
-    MMatrixX<prec> vm(v.data(), _NQ, _nao * _nao);
-    MMatrixX<prec> vmm(v.data(), _NQ * _nao, _nao);
+    // compute the number of valence orbitals, use ncore only for frozen core
+    size_t nv(_nao - _ncore - _nv_del);
+    statistics.start("Integral slice");
+    if (_ncore > 0 || _nv_del > 0) {
+      valence_slice_coulint_inplace(_nao, _ncore, nv, _NQ, _core_reordering, v); 
+    }
+    statistics.end();
+
+    MMatrixX<prec> vm(v.data(), _NQ, nv * nv);
+    MMatrixX<prec> vmm(v.data(), _NQ * nv, nv);
     // #pragma omp parallel
     {
-      MatrixX<prec>   Gb_k1(_nao, _nao);
-      MatrixX<prec>   G_k1q(_nao, _nao);
-      tensor<prec, 3> X1(_nao, _nao, _NQ);
-      tensor<prec, 3> X2(_NQ, _nao, _nao);
+      MatrixX<prec>   Gb_k1(nv, nv);
+      MatrixX<prec>   G_k1q(nv, nv);
+      tensor<prec, 3> X1(nv, nv, _NQ);
+      tensor<prec, 3> X2(_NQ, nv, nv);
 
-      MMatrixX<prec>  VVm(X2.data(), _nao * _nao, _NQ);
-      MMatrixX<prec>  VVmm(X2.data(), _nao, _nao * _NQ);
-      MMatrixX<prec>  X1m(X1.data(), _nao, _nao * _NQ);
-      MMatrixX<prec>  X2m(X2.data(), _NQ * _nao, _nao);
-      MMatrixX<prec>  X1mm(X1.data(), _nao * _nao, _NQ);
-      MMatrixX<prec>  X2mm(X2.data(), _NQ, _nao * _nao);
+      MMatrixX<prec>  VVm(X2.data(), nv * nv, _NQ);
+      MMatrixX<prec>  VVmm(X2.data(), nv, nv * _NQ);
+      MMatrixX<prec>  X1m(X1.data(), nv, nv * _NQ);
+      MMatrixX<prec>  X2m(X2.data(), _NQ * nv, nv);
+      MMatrixX<prec>  X1mm(X1.data(), nv * nv, _NQ);
+      MMatrixX<prec>  X2mm(X2.data(), _NQ, nv * nv);
 
       size_t          pns       = _nso / _nao;  // spin blocks per dimension: 1 for non-X2C, 2 for X2C
       double          prefactor = (_ns == 2 or _X2C) ? 1.0 : 2.0;
@@ -182,8 +190,14 @@ namespace green::mbpt::kernels {
           size_t a  = (s / pns) % pns;  // row spin-block index of the G(k1+q) block
           size_t b  = s % pns;          // col spin-block index; G^bar(k1) uses (b,a) to take the adjoint block
           Gb_k1 = G_k1_full[is].block(b * _nao, a * _nao, _nao, _nao);
-          G_k1q = G_k1q_full[is].block(a * _nao, b * _nao, _nao, _nao);
-          P0_contraction<prec>(Gb_k1, G_k1q, vm, VVm, VVmm, X1m, vmm, X2m, X1mm, X2mm, P0, prefactor);
+          G_k1q = G_k1q_full[is].block(a * _nao, b * _nao, _nao, _nao);  
+	        if (_ncore > 0 || _nv_del > 0) {
+            statistics.start("G slice");
+	          valence_slice_matrix_inplace(_nao, _ncore, nv, _core_reordering, Gb_k1);   // writes into top-left nv x nv block
+	          valence_slice_matrix_inplace(_nao, _ncore, nv, _core_reordering, G_k1q);
+            statistics.end();
+	        }
+          P0_contraction<prec>(Gb_k1.topLeftCorner(nv, nv), G_k1q.topLeftCorner(nv, nv), vm, VVm, VVmm, X1m, vmm, X2m, X1mm, X2mm, P0, prefactor);
         }
       }
     }
@@ -309,7 +323,17 @@ namespace green::mbpt::kernels {
     // (Q, i, m) or (Q', j, n)*
     tensor<prec, 3> v(_NQ, _nao, _nao);
     _coul_int1->symmetrize(v, k1_k1mq[0], k1_k1mq[1]);
-    MMatrixX<prec> vm(v.data(), _NQ * _nao, _nao);
+    // compute the number of valence orbitals, use ncore only for frozen core
+    size_t nv(_nao - _ncore - _nv_del);
+    // For now the code is doing the slice copy even if ncore = ndel = 0 that's not super clean
+    statistics.start("Integral slice");
+    // tensor<prec, 3> v_val(_NQ, nv, nv);
+
+    if (_ncore > 0 || _nv_del > 0) {
+      valence_slice_coulint_inplace(_nao, _ncore, nv, _NQ, _core_reordering, v); 
+    }
+    statistics.end();    
+    MMatrixX<prec> vm(v.data(), _NQ * nv, nv);
 
     // bosonic momentum q index in FBZ
     size_t q_idx = _bz_utils.k_q_map().q_from_k1k2(k1_k1mq[0], k1_k1mq[1]);
@@ -317,16 +341,16 @@ namespace green::mbpt::kernels {
     // #pragma omp parallel
     {
       MatrixX<prec>   G_k1q(_nao, _nao);
-      MatrixXcd       Sigma_ts(_nao, _nao);
-      tensor<prec, 3> Y1(_NQ, _nao, _nao);
-      tensor<prec, 3> Y2(_nao, _nao, _NQ);
+      MatrixXcd       Sigma_ts(nv, nv);
+      tensor<prec, 3> Y1(_NQ, nv, nv);
+      tensor<prec, 3> Y2(nv, nv, _NQ);
 
-      MMatrixX<prec>  Y1m(Y1.data(), _NQ * _nao, _nao);
-      MMatrixX<prec>  Y1mm(Y1.data(), _NQ, _nao * _nao);
-      MMatrixX<prec>  Y2mm(Y2.data(), _nao * _nao, _NQ);
-      MMatrixX<prec>  X2m(Y1.data(), _nao, _NQ * _nao);
-      MMatrixX<prec>  Y2mmm(Y2.data(), _nao, _nao * _NQ);
-      MMatrixX<prec>  X2mm(Y1.data(), _nao * _NQ, _nao);
+      MMatrixX<prec>  Y1m(Y1.data(), _NQ * nv, nv);
+      MMatrixX<prec>  Y1mm(Y1.data(), _NQ, nv * nv);
+      MMatrixX<prec>  Y2mm(Y2.data(), nv * nv, _NQ);
+      MMatrixX<prec>  X2m(Y1.data(), nv, _NQ * nv);
+      MMatrixX<prec>  Y2mmm(Y2.data(), nv, nv * _NQ);
+      MMatrixX<prec>  X2mm(Y1.data(), nv * _NQ, nv);
 
       // #pragma omp for
       size_t          pns       = _nso / _nao;  // spin blocks per dimension: 1 for non-X2C, 2 for X2C
@@ -344,14 +368,26 @@ namespace green::mbpt::kernels {
           size_t a  = (s / pns) % pns;  // row spin-block index of the G and Sigma blocks
           size_t b  = s % pns;          // col spin-block index
           G_k1q = G_k1q_full[is].block(a * _nao, b * _nao, _nao, _nao);
-          selfenergy_contraction(G_k1q, vm, Y1m, Y1mm, Y2mm, X2m, Y2mmm, X2mm, P_sp, Sigma_ts);
+	        if (_ncore > 0 || _nv_del > 0) {
+            statistics.start("G slice");
+	          valence_slice_matrix_inplace(_nao, _ncore, nv, _core_reordering, G_k1q);   // writes into top-left nv x nv block
+  	        statistics.end();
+	        }
+          selfenergy_contraction<prec>(G_k1q.topLeftCorner(nv, nv), vm, Y1m, Y1mm, Y2mm, X2m, Y2mmm, X2mm, P_sp, Sigma_ts);
           // sigma_shift locates the start of the nso x nso Sigma matrix for
           // tau index t, spin is, and k-point k1_pos in the flat array
           // Sigma[nts, ns, ink, nso, nso]. The (a,b) spin block then receives
           // the nao x nao contraction result.
           sigma_shift = t * _ns * _ink * _nso * _nso + is * _ink * _nso * _nso + k1_pos * _nso * _nso;
-          MMatrixXcd Sm_nso(Sigma_fermi.data() + sigma_shift, _nso, _nso);
-          Sm_nso.block(a * _nao, b * _nao, _nao, _nao) -= Sigma_ts;
+          MMatrixXcd Sm_nso(Sigma_fermi.data() + sigma_shift, _nso, _nso);        
+          // Scatter Sigma_ts back using core_reordering so that valence orbital r maps to
+	        // its original index core_reordering[_ncore + r], matching the slice in valence_slice_matrix.
+	        for (size_t r = 0; r < nv; ++r) {
+	          for (size_t s = 0; s < nv; ++s) {
+		          Sm_nso(a * _nao + _core_reordering[_ncore + r], b * _nao + _core_reordering[_ncore + s]) -= Sigma_ts(r, s);
+	          }
+	        }
+          // Sm_nso.block(a * _nao + _ncore, b * _nao + _ncore, nv, nv) -= Sigma_ts;
         }
       }
     }
