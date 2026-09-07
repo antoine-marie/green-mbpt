@@ -31,8 +31,8 @@ namespace green::mbpt::kernels {
   void gw_cpu_kernel::solve(G_type& g, St_type& sigma_tau) {
     auto cntx = g.cntx();
     _coul_int1 = new df_integral_t(_path, _nao, _NQ, _bz_utils, cntx);
-    utils::shared_object<ztensor<4>> P0_tilde_s(std::array<size_t, 4>{_nts, 1, _NQ, _NQ}, cntx);
-    utils::shared_object<ztensor<4>> Pw_tilde_s(std::array<size_t, 4>{_nw_b, 1, _NQ, _NQ}, cntx);
+    utils::shared_object<ztensor<4>> P0_tilde_s(std::array<size_t, 4>{_nts, 1, _NQ_eff, _NQ_eff}, cntx);
+    utils::shared_object<ztensor<4>> Pw_tilde_s(std::array<size_t, 4>{_nw_b, 1, _NQ_eff, _NQ_eff}, cntx);
     MPI_Datatype                     dt_matrix     = utils::create_matrix_datatype<std::complex<double>>(_nso * _nso);
     MPI_Op                           matrix_sum_op = utils::create_matrix_operation<std::complex<double>>();
     auto&                            sigma_fermi   = sigma_tau.object();
@@ -155,21 +155,23 @@ namespace green::mbpt::kernels {
     }
     statistics.end();
 
-    MMatrixX<prec> vm(v.data(), _NQ, nv * nv);
-    MMatrixX<prec> vmm(v.data(), _NQ * nv, nv);
+// v.data() layout is (Q, nao, nao) [or (Q,nv,nv) after the slice above] with Q outermost,
+// so truncating the last _nQ_del blocks is a pure pointer/size change:
+    MMatrixX<prec> vm(v.data(), _NQ_eff, nv * nv);
+    MMatrixX<prec> vmm(v.data(), _NQ_eff * nv, nv);
     // #pragma omp parallel
     {
       MatrixX<prec>   Gb_k1(nv, nv);
       MatrixX<prec>   G_k1q(nv, nv);
-      tensor<prec, 3> X1(nv, nv, _NQ);
-      tensor<prec, 3> X2(_NQ, nv, nv);
+      tensor<prec, 3> X1(nv, nv, _NQ_eff);
+      tensor<prec, 3> X2(_NQ_eff, nv, nv);
 
-      MMatrixX<prec>  VVm(X2.data(), nv * nv, _NQ);
-      MMatrixX<prec>  VVmm(X2.data(), nv, nv * _NQ);
-      MMatrixX<prec>  X1m(X1.data(), nv, nv * _NQ);
-      MMatrixX<prec>  X2m(X2.data(), _NQ * nv, nv);
-      MMatrixX<prec>  X1mm(X1.data(), nv * nv, _NQ);
-      MMatrixX<prec>  X2mm(X2.data(), _NQ, nv * nv);
+      MMatrixX<prec>  VVm(X2.data(), nv * nv, _NQ_eff);
+      MMatrixX<prec>  VVmm(X2.data(), nv, nv * _NQ_eff);
+      MMatrixX<prec>  X1m(X1.data(), nv, nv * _NQ_eff);
+      MMatrixX<prec>  X2m(X2.data(), _NQ_eff * nv, nv);
+      MMatrixX<prec>  X1mm(X1.data(), nv * nv, _NQ_eff);
+      MMatrixX<prec>  X2mm(X2.data(), _NQ_eff, nv * nv);
 
       size_t          pns       = _nso / _nao;  // spin blocks per dimension: 1 for non-X2C, 2 for X2C
       double          prefactor = (_ns == 2 or _X2C) ? 1.0 : 2.0;
@@ -177,7 +179,7 @@ namespace green::mbpt::kernels {
       // #pragma omp for
       for (size_t t = tau_offset, it = 0; it < local_tau; ++t, ++it) {  // Loop over half-tau
         size_t     tt = _nts - t - 1;                                   // beta - t
-        MMatrixXcd P0(P0_tilde.data() + t * _NQ * _NQ, _NQ, _NQ);
+        MMatrixXcd P0(P0_tilde.data() + t * _NQ_eff * _NQ_eff, _NQ_eff, _NQ_eff);
         // Cache value_AO once per (is, k) to avoid repeating the transform
         // for each of the pns² spin-block combinations.
         MatrixX<prec> G_k1_full[2], G_k1q_full[2];  // at most _ns=2 spin channels
@@ -254,9 +256,9 @@ namespace green::mbpt::kernels {
 
     statistics.start("GW-BSE");
     // Solve Dyson-like eqn for ncheb frequency points
-    MatrixXcd              identity = MatrixXcd::Identity(_NQ, _NQ);
+    MatrixXcd              identity = MatrixXcd::Identity(_NQ_eff, _NQ_eff);
     // Eigen::FullPivLU<MatrixXcd> lusolver(_NQ,_NQ);
-    Eigen::LDLT<MatrixXcd> ldltsolver(_NQ);
+    Eigen::LDLT<MatrixXcd> ldltsolver(_NQ_eff);
     for (size_t n = w_offset, loc_n = 0; loc_n < nw_local; ++n, ++loc_n) {
       MatrixXcd temp     = identity - matrix(P0_w(n, 0));
       // temp = lusolver.compute(temp).inverse().eval();
@@ -294,10 +296,15 @@ namespace green::mbpt::kernels {
 
   template <typename prec>
   MatrixX<prec> gw_cpu_kernel::eval_p0_bz_from_ibz(const ztensor<2>& p0_tilde_q_ibz, size_t q_bz) {
-    MatrixX<prec> U_q(_NQ, _NQ);
-    _bz_utils.q_symmetry().q_sym_transform_p0(U_q, q_bz);
+    MatrixX<prec> U_q_full(_NQ, _NQ);
+    _bz_utils.q_symmetry().q_sym_transform_p0(U_q_full, q_bz);
+    // ...then restrict it to the retained _NQ_eff subspace, consistent with the
+    // truncated P0/P storage. This assumes the discarded aux functions are
+    // symmetry-decoupled from the retained ones (see prior discussion / molecular case).
+    MatrixX<prec> U_q = U_q_full.topLeftCorner(_NQ_eff, _NQ_eff);
+
     // Symmetry transform P to current q point and apply conjugation if needed
-    CMMatrixXcd P_q_ibz_matrix(p0_tilde_q_ibz.data(), _NQ, _NQ);
+    CMMatrixXcd P_q_ibz_matrix(p0_tilde_q_ibz.data(), _NQ_eff, _NQ_eff);
     MatrixX<prec> P_q = P_q_ibz_matrix.template cast<prec>();
     P_q = U_q * P_q * U_q.adjoint();
     if (_bz_utils.q_symmetry().tr_conj_list()[q_bz] == 1) {
@@ -333,7 +340,7 @@ namespace green::mbpt::kernels {
       valence_slice_coulint_inplace(_nao, _ncore, nv, _NQ, _core_reordering, v); 
     }
     statistics.end();    
-    MMatrixX<prec> vm(v.data(), _NQ * nv, nv);
+    MMatrixX<prec> vm(v.data(), _NQ_eff * nv, nv);
 
     // bosonic momentum q index in FBZ
     size_t q_idx = _bz_utils.k_q_map().q_from_k1k2(k1_k1mq[0], k1_k1mq[1]);
@@ -342,15 +349,15 @@ namespace green::mbpt::kernels {
     {
       MatrixX<prec>   G_k1q(_nao, _nao);
       MatrixXcd       Sigma_ts(nv, nv);
-      tensor<prec, 3> Y1(_NQ, nv, nv);
-      tensor<prec, 3> Y2(nv, nv, _NQ);
+      tensor<prec, 3> Y1(_NQ_eff, nv, nv);
+      tensor<prec, 3> Y2(nv, nv, _NQ_eff);
 
-      MMatrixX<prec>  Y1m(Y1.data(), _NQ * nv, nv);
-      MMatrixX<prec>  Y1mm(Y1.data(), _NQ, nv * nv);
-      MMatrixX<prec>  Y2mm(Y2.data(), nv * nv, _NQ);
-      MMatrixX<prec>  X2m(Y1.data(), nv, _NQ * nv);
-      MMatrixX<prec>  Y2mmm(Y2.data(), nv, nv * _NQ);
-      MMatrixX<prec>  X2mm(Y1.data(), nv * _NQ, nv);
+      MMatrixX<prec>  Y1m(Y1.data(), _NQ_eff * nv, nv);
+      MMatrixX<prec>  Y1mm(Y1.data(), _NQ_eff, nv * nv);
+      MMatrixX<prec>  Y2mm(Y2.data(), nv * nv, _NQ_eff);
+      MMatrixX<prec>  X2m(Y1.data(), nv, _NQ_eff * nv);
+      MMatrixX<prec>  Y2mmm(Y2.data(), nv, nv * _NQ_eff);
+      MMatrixX<prec>  X2mm(Y1.data(), nv * _NQ_eff, nv);
 
       // #pragma omp for
       size_t          pns       = _nso / _nao;  // spin blocks per dimension: 1 for non-X2C, 2 for X2C
@@ -358,6 +365,7 @@ namespace green::mbpt::kernels {
       size_t          sigma_shift;
       for (size_t t = tau_offset, it = 0; it < tau_local; ++t, ++it) {
         MatrixX<prec> P_sp = eval_p0_bz_from_ibz<prec>(P0_tilde(t, 0), q_idx);
+	// MatrixX<prec> P_sp = P_full.topLeftCorner(_NQ_eff, _NQ_eff);
         // Cache value_AO once per (is, k) to avoid repeating the transform
         // for each of the pns² spin-block combinations.
         MatrixX<prec> G_k1q_full[2];  // at most _ns=2 spin channels

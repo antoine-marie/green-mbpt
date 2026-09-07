@@ -170,6 +170,7 @@ namespace green::mbpt {
     p.define<std::vector<int>>("core_reordering", "Vector of int to reorder orbitals. [-1] means that it will be read from input.h5", std::vector<int>{-1});  
     p.define<int>("ncore", "Number of core orbitals to remove. -1 means that it will be read from input.h5", -1);  
     p.define<size_t>("nv_del", "Number of virtual orbitals to remove from the computation of the GW dynamic self-energy.", 0);
+    p.define<size_t>("NQ_del", "Number of auxiliary functions to remove from the computation of the GW dynamic self-energy.", 0);
 #ifdef GREEN_CUSTOM_KERNEL_HEADER_0
     GREEN_CUSTOM_KERNEL_NS_0::custom_kernel_parameters(p);
 #endif

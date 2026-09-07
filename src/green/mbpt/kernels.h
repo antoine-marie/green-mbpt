@@ -50,7 +50,8 @@ namespace green::mbpt::kernels {
         // _P0_tilde(0, 0, 0, 0),
         _eps_inv_wq(ft.wsample_bose().size(), bz_utils.inq()),
         _coul_int1(nullptr),
-        _frozen_core(p["frozen_core"]),_nv_del(p["nv_del"]) {
+        _frozen_core(p["frozen_core"]),_nv_del(p["nv_del"])
+	,_NQ_del(p["NQ_del"]), _NQ_eff(_NQ - _NQ_del) {
       _q0_utils.resize(_NQ);
 
       h5pp::archive       ar(p["input_file"]);
@@ -119,8 +120,12 @@ namespace green::mbpt::kernels {
     df_integral_t*              _coul_int1;
     // Run frozen core GW
     bool                        _frozen_core;  
-    // number of core orbitals
-    size_t                      _nv_del;
+    // number of deleted virtual orbitals
+    size_t                      _nv_del; 
+    // number of deleted auxiliary functions
+    size_t                      _NQ_del;
+    // number of auxiliary functions in the calculation of the GW self-energy
+    size_t                      _NQ_eff;
     // number of core orbitals
     size_t                      _ncore;
     // list to reorder orbital
