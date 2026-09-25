@@ -47,6 +47,11 @@ namespace green::mbpt::kernels {
                                                                                               size_t NQ, double madelung,
                                                                                               const bz_utils_t& bz_utils,
                                                                                               const ztensor<4>& S_k) {
+      if (p["kernel"].as<kernel_type>() != CPU &&
+          (p["frozen_core"].as<bool>() || p["nv_del"].as<size_t>() > 0 || p["NQ_del"].as<size_t>() > 0)) {
+	  throw mbpt_invalid_truncation("frozen_core / nv_del / NQ_del are only supported with kernel=CPU");
+      }
+	
       if (p["kernel"].as<kernel_type>() == CPU) {
         if (X2C) {
           std::shared_ptr<void> kernel(new hf_x2c_cpu_kernel(p, nao, nso, ns, NQ, madelung, bz_utils, S_k));
